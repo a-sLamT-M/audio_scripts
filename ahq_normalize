@@ -1,0 +1,124 @@
+#!/usr/bin/env sh
+
+set -eu
+
+TARGET_I=${TARGET_I:--11}
+TARGET_TP=${TARGET_TP:--1}
+
+usage() {
+    printf '%s\n' \
+        'Usage:' \
+        '  ahq_normalize ./input.wav' \
+        '  ahq_normalize ./'
+}
+
+is_audio() {
+    extension=${1##*.}
+    extension=$(printf '%s' "$extension" | tr '[:upper:]' '[:lower:]')
+    case "$extension" in
+        wav|flac|mp3|m4a|aac|ogg|oga|opus|wma|aiff|aif|ape|mka|webm)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+if [ "$#" -ne 1 ]; then
+    usage
+    exit 2
+fi
+
+command -v ffmpeg >/dev/null 2>&1 || { printf '%s\n' 'Error: ffmpeg was not found in PATH.' >&2; exit 1; }
+command -v ffprobe >/dev/null 2>&1 || { printf '%s\n' 'Error: ffprobe was not found in PATH.' >&2; exit 1; }
+
+normalize_file() {
+    input=$1
+    output=$2
+
+    if [ -e "$output" ]; then
+        printf 'Skipping existing output: %s\n' "$output"
+        return 0
+    fi
+
+    printf 'Measuring: %s\n' "$input"
+    if ! stats=$(ffmpeg -hide_banner -nostdin -i "$input" \
+        -af "loudnorm=I=$TARGET_I:TP=$TARGET_TP:LRA=50:linear=false:print_format=json" \
+        -f null - 2>&1); then
+        printf 'Measurement failed: %s\n' "$input" >&2
+        return 1
+    fi
+
+    value() {
+        key=$1
+        printf '%s\n' "$stats" | awk -F'"' -v key="$key" '$2 == key { print $4; exit }'
+    }
+
+    measured_i=$(value input_i)
+    measured_lra=$(value input_lra)
+    measured_tp=$(value input_tp)
+    measured_thresh=$(value input_thresh)
+    offset=$(value target_offset)
+    sample_rate=$(ffprobe -v error -select_streams a:0 \
+        -show_entries stream=sample_rate -of csv=p=0 "$input" | tr -d '\r\n')
+
+    if [ -z "$measured_i" ] || [ -z "$measured_lra" ] || \
+        [ -z "$measured_tp" ] || [ -z "$measured_thresh" ] || \
+        [ -z "$offset" ] || [ -z "$sample_rate" ]; then
+        printf 'Measurement data was incomplete: %s\n' "$input" >&2
+        return 1
+    fi
+
+    target_lra=$(awk -v lra="$measured_lra" 'BEGIN { if (lra < 1) lra = 1; printf "%.6f", lra }')
+    predicted_tp=$(awk -v tp="$measured_tp" -v target="$TARGET_I" -v input="$measured_i" \
+        'BEGIN { printf "%.6f", tp + target - input }')
+
+    if awk -v tp="$predicted_tp" -v target="$TARGET_TP" \
+        'BEGIN { exit !(tp > target + 0.01) }'; then
+        printf 'Skipping: fixed gain would exceed %s dBTP (predicted %s dBTP): %s\n' \
+            "$TARGET_TP" "$predicted_tp" "$input" >&2
+        return 0
+    fi
+
+    printf 'Normalizing linearly: %s -> %s\n' "$input" "$output"
+    ffmpeg -hide_banner -nostdin -i "$input" \
+        -af "loudnorm=I=$TARGET_I:TP=$TARGET_TP:LRA=$target_lra:measured_I=$measured_i:measured_LRA=$measured_lra:measured_TP=$measured_tp:measured_thresh=$measured_thresh:offset=$offset:linear=true:print_format=summary" \
+        -ar "$sample_rate" -c:a pcm_s24le -n "$output"
+}
+
+target=$1
+
+if [ -f "$target" ]; then
+    is_audio "$target" || { printf '%s\n' 'Error: unsupported audio extension.' >&2; exit 2; }
+    case "$target" in
+        */*) directory=${target%/*} ;;
+        *) directory=. ;;
+    esac
+    filename=${target##*/}
+    stem=${filename%.*}
+    normalize_file "$target" "$directory/${stem}_normalized.wav"
+    exit $?
+fi
+
+if [ -d "$target" ]; then
+    output_directory=$target/normalized
+    mkdir -p "$output_directory"
+    found=0
+    for input in "$target"/*; do
+        [ -f "$input" ] || continue
+        is_audio "$input" || continue
+        case "${input##*/}" in
+            *_normalized.wav) continue ;;
+        esac
+        found=1
+        filename=${input##*/}
+        stem=${filename%.*}
+        normalize_file "$input" "$output_directory/${stem}_normalized.wav" || true
+    done
+    [ "$found" -eq 1 ] || printf 'No supported audio files found in %s.\n' "$target"
+    exit 0
+fi
+
+printf 'Error: input file or directory not found: %s\n' "$target" >&2
+exit 2
