@@ -68,11 +68,7 @@ function Invoke-Normalize {
         Write-Warning "Input sample rate was not found: $($InputFile.FullName)"
         return
     }
-    if ($predictedTp -gt ($TargetTP + 0.01)) {
-        Write-Warning ("Skipping {0}: fixed gain would exceed {1} dBTP " +
-            "(predicted {2} dBTP)." -f $InputFile.FullName, $TargetTP, $predictedTp)
-        return
-    }
+
 
     Write-Host "Normalizing linearly: $($InputFile.FullName) -> $OutputPath"
     $filter = "loudnorm=I=$TargetI`:TP=$TargetTP`:LRA=$targetLra`:measured_I=$measuredI`:measured_LRA=$measuredLra`:measured_TP=$measuredTp`:measured_thresh=$measuredThresh`:offset=$offset`:linear=true`:print_format=summary"

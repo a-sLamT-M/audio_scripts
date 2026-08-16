@@ -74,12 +74,7 @@ normalize_file() {
     predicted_tp=$(awk -v tp="$measured_tp" -v target="$TARGET_I" -v input="$measured_i" \
         'BEGIN { printf "%.6f", tp + target - input }')
 
-    if awk -v tp="$predicted_tp" -v target="$TARGET_TP" \
-        'BEGIN { exit !(tp > target + 0.01) }'; then
-        printf 'Skipping: fixed gain would exceed %s dBTP (predicted %s dBTP): %s\n' \
-            "$TARGET_TP" "$predicted_tp" "$input" >&2
-        return 0
-    fi
+
 
     printf 'Normalizing linearly: %s -> %s\n' "$input" "$output"
     ffmpeg -hide_banner -nostdin -i "$input" \
